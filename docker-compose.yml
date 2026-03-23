@@ -1,0 +1,291 @@
+version: '3.8'
+
+services:
+  # ==================== 基础服务 ====================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: hudi-zookeeper
+    hostname: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+    volumes:
+      - ./data/zookeeper:/var/lib/zookeeper/data
+    networks:
+      - hudi-network
+    ports:
+      - "2181"
+    healthcheck:
+      test: ["CMD", "echo", "ruok", "|", "nc", "localhost", "2181"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==================== HDFS 服务 ====================
+  hdfs-namenode:
+    image: harisekhon/hadoop:latest
+    container_name: hudi-hdfs-namenode
+    hostname: namenode
+    command: hdfs namenode
+    environment:
+      CLUSTER_NAME: hudi-cluster
+      HADOOP_HOME: /opt/hadoop
+      HADOOP_CONF_DIR: /opt/hadoop/etc/hadoop
+    volumes:
+      - ./data/hdfs-namenode:/opt/hadoop/data/namenode
+      - ./config/hdfs:/opt/hadoop/etc/hadoop
+      - ./scripts:/scripts
+    networks:
+      - hudi-network
+    ports:
+      - "9870"
+      - "9000"
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "hdfs", "dfsadmin", "-report"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  hdfs-datanode:
+    image: harisekhon/hadoop:latest
+    container_name: hudi-hdfs-datanode
+    hostname: datanode
+    command: hdfs datanode
+    environment:
+      HADOOP_HOME: /opt/hadoop
+      HADOOP_CONF_DIR: /opt/hadoop/etc/hadoop
+    volumes:
+      - ./data/hdfs-datanode:/opt/hadoop/data/datanode
+      - ./config/hdfs:/opt/hadoop/etc/hadoop
+    networks:
+      - hudi-network
+    depends_on:
+      hdfs-namenode:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "hdfs", "dfsadmin", "-report"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ==================== Kafka 服务 ====================
+  kafka-broker:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: hudi-kafka-broker
+    hostname: kafka-broker
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - ./data/kafka:/var/lib/kafka/data
+    networks:
+      - hudi-network
+    ports:
+      - "29092"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ==================== Spark 服务 ====================
+  spark-master:
+    image: apache/spark:3.5.8-r
+    container_name: hudi-spark-master
+    hostname: spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    volumes:
+      - ./data/spark:/opt/spark/data
+      - ./jars/hudi-spark3.5-bundle_2.12-1.1.1.jar:/opt/spark/jars/hudi-spark3.5-bundle_2.12-1.1.1.jar
+      - ./scripts:/scripts
+    ports:
+      - "8082:8080"
+      - "7077:7077"
+    networks:
+      - hudi-network
+    depends_on:
+      hdfs-namenode:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  spark-worker:
+    image: apache/spark:3.5.8-r
+    container_name: hudi-spark-worker
+    hostname: spark-worker
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    volumes:
+      - ./data/spark:/opt/spark/data
+      - ./jars/hudi-spark3.5-bundle_2.12-1.1.1.jar:/opt/spark/jars/hudi-spark3.5-bundle_2.12-1.1.1.jar
+    depends_on:
+      - spark-master
+    networks:
+      - hudi-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+
+
+  # ==================== Hive Metastore 服务 ====================
+  # hive-metastore-mysql:
+  #   image: mysql:8
+  #   container_name: hudi-hive-metastore-mysql
+  #   hostname: hive-metastore-mysql
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: root
+  #     MYSQL_DATABASE: metastore
+  #     MYSQL_USER: hive
+  #     MYSQL_PASSWORD: hive
+  #   volumes:
+  #     - ./data/hive-metastore-db:/var/lib/mysql
+  #   networks:
+  #     - hudi-network
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -proot"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #
+  hive-metastore-mysql:
+    image: mysql:8
+    container_name: hudi-hive-metastore-mysql
+    hostname: hive-metastore-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: metastore
+      MYSQL_USER: hive
+      MYSQL_PASSWORD: hive
+    volumes:
+      - ./data/hive-metastore-db:/var/lib/mysql
+    networks:
+      - hudi-network
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  hive-metastore:
+    image: apache/hive:3.1.3
+    container_name: hudi-hive-metastore
+    hostname: hive-metastore
+    user: root
+    entrypoint: [""]
+    command: >
+      bash -c "
+        export HADOOP_HOME=/opt/hadoop &&
+        export HIVE_HOME=/opt/hive &&
+        /opt/hive/bin/hive --service metastore -hiveconf hive.root.logger=INFO,console
+      "
+    volumes:
+      - ./data/hive-metastore:/opt/hive/data
+      - ./config/hive:/opt/hive/conf
+      - ./jars/mysql-connector-j-8.2.0.jar:/opt/hive/lib/mysql-connector-j-8.2.0.jar
+    networks:
+      - hudi-network
+    ports:
+      - "9083"
+    depends_on:
+      hive-metastore-mysql:
+        condition: service_healthy
+      hdfs-namenode:
+        condition: service_healthy
+  # ==================== Trino 查询引擎 ====================
+  # trino:
+  #   image: trinodb/trino:450
+  #   container_name: hudi-trino
+  #   hostname: trino
+  #   volumes:
+  #     - ./config/trino:/etc/trino
+  #   networks:
+  #     - hudi-network
+  #   ports:
+  #     - "8080"
+  #   depends_on:
+  #     hdfs-namenode:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: ["CMD", "trino", "--execute", "SELECT 1"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+
+  # ==================== 管理工具 ====================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: hudi-kafka-ui
+    hostname: kafka-ui
+    environment:
+      KAFKA_CLUSTERS_0_NAME: hudi-kafka
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-broker:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - hudi-network
+    ports:
+      - "8089"
+    depends_on:
+      kafka-broker:
+        condition: service_healthy
+
+  # ==================== Hudi 工具容器 ====================
+  adhoc:
+    image: harisekhon/hadoop:latest
+    container_name: hudi-adhoc
+    hostname: adhoc
+    environment:
+      HADOOP_HOME: /opt/hadoop
+      HIVE_HOME: /opt/hive
+      SPARK_HOME: /opt/spark
+      HUDI_HOME: /var/hoodie/ws
+      FLINK_HOME: /opt/flink
+    volumes:
+      - ./scripts:/scripts
+      - ./data:/data
+      - ./config:/config
+    networks:
+      - hudi-network
+    command: ["sleep", "infinity"]
+    depends_on:
+      - hdfs-namenode
+      - kafka-broker
+      - spark-master
+      - hive-metastore
+
+# ==================== 网络配置 ====================
+networks:
+  hudi-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
+
+# ==================== 卷定义 ====================
+volumes:
+  hdfs-namenode-data:
+  hdfs-datanode-data:
+  kafka-data:
+  hive-metastore-db:
+  flink-checkpoints:
+  flink-savepoints:

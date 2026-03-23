@@ -1,0 +1,43 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker data
+data/
+
+# Hudi metadata cache
+.hoodie/
+
+# Logs
+*.log
+logs/
+
+# JAR files (too large for git)
+# Keep scripts and docs, exclude large JARs
+jars/*.jar
+!jars/README.md
+
+# Temporary files
+tmp/
+temp/
+*.tmp
